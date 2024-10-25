@@ -1,0 +1,127 @@
+#!/bin/bash
+set -eou pipefail
+
+# Load ARCCA modules.
+module load bwa
+module load samtools
+module load java
+
+OUTDIR="run1"
+
+mkdir $OUTDIR
+cd $OUTDIR
+
+SAMPLE=my_sample
+REF_PATH=/home/scw1557/UNIX_5/BWA
+ANNOVAR_DB=/home/scw1557/UNIX_5/annovar/humandb
+
+mkdir data
+cd data
+
+echo
+echo "Downloading R1..."
+#curl -O ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR525/007/SRR5252327/SRR5252327_1.fastq.gz
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR525/007/SRR5252327/SRR5252327_1.fastq.gz
+echo
+echo "Downloading R2..."
+#curl -O ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR525/007/SRR5252327/SRR5252327_2.fastq.gz
+wget ftp://ftp.sra.ebi.ac.uk/vol1/fastq/SRR525/007/SRR5252327/SRR5252327_2.fastq.gz
+echo
+
+chmod 444 SRR5252327_1.fastq.gz
+chmod 444 SRR5252327_2.fastq.gz
+cd ..
+
+mkdir mapping
+cd mapping
+
+ln -s ../data/SRR5252327_1.fastq.gz R1.fastq.gz
+ln -s ../data/SRR5252327_2.fastq.gz R2.fastq.gz
+
+echo
+gunzip -c R1.fastq.gz | grep -cP "^@\w+\.\w+"| xargs echo "Number of reads in R1:"
+gunzip -c R2.fastq.gz | grep -cP "^@\w+\.\w+"| xargs echo "Number of reads in R2:"
+echo
+
+echo
+echo "Mapping data..."
+bwa mem -R "@RG\tID:$SAMPLE\tPL:illumina\tSM:$SAMPLE" \
+	$REF_PATH/hg38.fasta \
+	R1.fastq.gz \
+	R2.fastq.gz \
+	> $SAMPLE\.sam \
+	2>> ../log
+echo "Done!"
+
+echo 
+echo "Converting SAM to BAM..."
+samtools view -bt $REF_PATH/hg38.fasta $SAMPLE\.sam | samtools sort - | tee $SAMPLE\.bam | samtools index - $SAMPLE\.bam.bai
+
+echo
+echo "Summarise mapping..."
+samtools view $SAMPLE\.bam | cut -f3 | uniq -c | sort -n
+cd ..
+
+mkdir variants
+cd variants
+
+echo
+echo "Run samtools mpileup..."
+samtools mpileup -B -f $REF_PATH/hg38.fasta ../mapping/$SAMPLE\.bam  > $SAMPLE\.pileup 2>> ../log
+echo "Done!"
+
+echo
+echo "Summarise number of base positions covered in each chromosome..."
+cut -f1 $SAMPLE\.pileup | uniq -c
+
+echo
+echo "Representation according to base..."
+cut -f3 $SAMPLE\.pileup | tr 'acgt' 'ACGT' | sort | uniq -c | sort -nr
+
+echo
+echo -e "depth\tlocations" > coverage_depth.txt 
+cut -f4 $SAMPLE\.pileup | sort | uniq -c | sort -n -k2 | awk ' { t = $1; $1 = $2; $2 = t; print $1 "\t" $2; } ' >> coverage_depth.txt
+
+echo
+echo "Call variants with varscan..."
+java -jar /software/genomics/varscan/2.4.1/VarScan.jar mpileup2snp  $SAMPLE\.pileup --output-vcf 1 > $SAMPLE\.vcf 2>> ../log
+echo "Done!"
+
+echo 
+echo "Total number of SNPs identified:"
+grep -vc "^#" $SAMPLE\.vcf 
+
+echo "Creating a simple spreadsheet from the VCF file..."
+grep -v "^##" $SAMPLE\.vcf | cut -f1,2,4,5 | sed 's/\t/,/g' > snps.csv 
+echo "Done!"
+
+echo
+echo "SNP locations:"
+grep -v "^#" $SAMPLE\.vcf | cut -f1 | uniq -c | perl -ne '/\s+(\d+)\s+(\d+)/; print "$1 snps in chromosome $2\n"'
+
+echo
+echo "Annotate..."
+/home/scw1557/UNIX_5/annovar/convert2annovar.pl $SAMPLE\.vcf -format vcf4old --includeinfo > $SAMPLE\.av 2>> ../log
+/home/scw1557/UNIX_5/annovar/annotate_variation.pl -buildver hg38 -geneanno -dbtype knownGene $SAMPLE\.av $ANNOVAR_DB --outfile annovar_out 2>> ../log
+
+echo -e "chr\tposition\tref\talt\tgene\texon\tcDNA pos\taa pos\tmutation type" > final.txt
+cut -f2 annovar_out.exonic_variant_function | cut -f1 -d' ' > cols2.txt
+cut -f3 annovar_out.exonic_variant_function | cut -f1,3,4,5 -d':' --output-delimiter=" " | tr ' ' '\t' > cols3.txt
+cut -f4,5,7,8 annovar_out.exonic_variant_function > cols4578.txt
+paste cols4578.txt cols3.txt cols2.txt >> final.txt
+
+chmod 444 final.txt
+
+cat final.txt
+
+# Leave directory.
+cd ..
+
+# Leave working directory
+cd ..
+
+echo "Create tarball from working directory..."
+tar czf $OUTDIR\.tar.gz $OUTDIR
+
+echo
+echo "Complete!"
