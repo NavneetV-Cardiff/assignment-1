@@ -1,0 +1,153 @@
+#!/bin/bash
+set -eou pipefail
+
+# Load ARCCA modules.
+module load bwa
+module load samtools
+module load java
+
+OUTDIR="run1"
+
+mkdir $OUTDIR
+cd $OUTDIR
+
+SAMPLE=my_sample
+REF_PATH=/home/scw1557/UNIX_5/BWA
+ANNOVAR_DB=/home/scw1557/UNIX_5/annovar/humandb
+
+# Validate URL function
+validate_url() {
+    if ! curl --output /dev/null --silent --head --fail "$1"; then
+        echo "Error: The URL '$1' is not reachable."
+        exit 1
+    fi
+}
+
+# Validate filename function
+validate_filename() {
+    if [[ "$1" =~ [^a-zA-Z0-9._-] ]]; then
+        echo "Error: Filename '$1' contains invalid characters. Only letters, numbers, dots, underscores, and hyphens are allowed."
+        exit 1
+    fi
+}
+
+# Prompt for R1 and R2 links and file names
+read -p "Enter the URL for R1: " R1_URL
+validate_url "$R1_URL"
+read -p "Enter the file name for R1 (e.g., R1.fastq.gz): " R1_NAME
+validate_filename "$R1_NAME"
+
+read -p "Enter the URL for R2: " R2_URL
+validate_url "$R2_URL"
+read -p "Enter the file name for R2 (e.g., R2.fastq.gz): " R2_NAME
+validate_filename "$R2_NAME"
+
+mkdir data
+cd data
+
+# Downloading R1 and R2 with user-provided URLs
+echo
+echo "Downloading R1..."
+wget -O "$R1_NAME" "$R1_URL"
+echo
+echo "Downloading R2..."
+wget -O "$R2_NAME" "$R2_URL"
+echo
+
+chmod 444 "$R1_NAME"
+chmod 444 "$R2_NAME"
+cd ..
+
+mkdir mapping
+cd mapping
+
+ln -s ../data/"$R1_NAME" R1.fastq.gz
+ln -s ../data/"$R2_NAME" R2.fastq.gz
+
+echo
+gunzip -c R1.fastq.gz | grep -cP "^@\w+\.\w+" | xargs echo "Number of reads in R1:"
+gunzip -c R2.fastq.gz | grep -cP "^@\w+\.\w+" | xargs echo "Number of reads in R2:"
+echo
+
+echo
+echo "Mapping data..."
+bwa mem -R "@RG\tID:$SAMPLE\tPL:illumina\tSM:$SAMPLE" \
+	$REF_PATH/hg38.fasta \
+	R1.fastq.gz \
+	R2.fastq.gz \
+	> $SAMPLE\.sam \
+	2>> ../log
+echo "Done!"
+
+echo 
+echo "Converting SAM to BAM..."
+samtools view -bt $REF_PATH/hg38.fasta $SAMPLE\.sam | samtools sort - | tee $SAMPLE\.bam | samtools index - $SAMPLE\.bam.bai
+
+echo
+echo "Summarise mapping..."
+samtools view $SAMPLE\.bam | cut -f3 | uniq -c | sort -n
+cd ..
+
+mkdir variants
+cd variants
+
+echo
+echo "Run samtools mpileup..."
+samtools mpileup -B -f $REF_PATH/hg38.fasta ../mapping/$SAMPLE\.bam  > $SAMPLE\.pileup 2>> ../log
+echo "Done!"
+
+echo
+echo "Summarise number of base positions covered in each chromosome..."
+cut -f1 $SAMPLE\.pileup | uniq -c
+
+echo
+echo "Representation according to base..."
+cut -f3 $SAMPLE\.pileup | tr 'acgt' 'ACGT' | sort | uniq -c | sort -nr
+
+echo
+echo -e "depth\tlocations" > coverage_depth.txt 
+cut -f4 $SAMPLE\.pileup | sort | uniq -c | sort -n -k2 | awk ' { t = $1; $1 = $2; $2 = t; print $1 "\t" $2; } ' >> coverage_depth.txt
+
+echo
+echo "Call variants with varscan..."
+java -jar /software/genomics/varscan/2.4.1/VarScan.jar mpileup2snp  $SAMPLE\.pileup --output-vcf 1 > $SAMPLE\.vcf 2>> ../log
+echo "Done!"
+
+echo 
+echo "Total number of SNPs identified:"
+grep -vc "^#" $SAMPLE\.vcf 
+
+echo "Creating a simple spreadsheet from the VCF file..."
+grep -v "^##" $SAMPLE\.vcf | cut -f1,2,4,5 | sed 's/\t/,/g' > snps.csv 
+echo "Done!"
+
+echo
+echo "SNP locations:"
+grep -v "^#" $SAMPLE\.vcf | cut -f1 | uniq -c | perl -ne '/\s+(\d+)\s+(\d+)/; print "$1 snps in chromosome $2\n"'
+
+echo
+echo "Annotate..."
+/home/scw1557/UNIX_5/annovar/convert2annovar.pl $SAMPLE\.vcf -format vcf4old --includeinfo > $SAMPLE\.av 2>> ../log
+/home/scw1557/UNIX_5/annovar/annotate_variation.pl -buildver hg38 -geneanno -dbtype knownGene $SAMPLE\.av $ANNOVAR_DB --outfile annovar_out 2>> ../log
+
+echo -e "chr\tposition\tref\talt\tgene\texon\tcDNA pos\taa pos\tmutation type" > final.txt
+cut -f2 annovar_out.exonic_variant_function | cut -f1 -d' ' > cols2.txt
+cut -f3 annovar_out.exonic_variant_function | cut -f1,3,4,5 -d':' --output-delimiter=" " | tr ' ' '\t' > cols3.txt
+cut -f4,5,7,8 annovar_out.exonic_variant_function > cols4578.txt
+paste cols4578.txt cols3.txt cols2.txt >> final.txt
+
+chmod 444 final.txt
+
+cat final.txt
+
+# Leave directory.
+cd ..
+
+# Leave working directory
+cd ..
+
+echo "Create tarball from working directory..."
+tar czf $OUTDIR\.tar.gz $OUTDIR
+
+echo
+echo "Complete!"
