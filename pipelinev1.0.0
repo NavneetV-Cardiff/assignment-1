@@ -15,32 +15,12 @@ SAMPLE=my_sample
 REF_PATH=/home/scw1557/UNIX_5/BWA
 ANNOVAR_DB=/home/scw1557/UNIX_5/annovar/humandb
 
-# Validate URL function
-validate_url() {
-    if ! curl --output /dev/null --silent --head --fail "$1"; then
-        echo "Error: The URL '$1' is not reachable."
-        exit 1
-    fi
-}
-
-# Validate filename function
-validate_filename() {
-    if [[ "$1" =~ [^a-zA-Z0-9._-] ]]; then
-        echo "Error: Filename '$1' contains invalid characters. Only letters, numbers, dots, underscores, and hyphens are allowed."
-        exit 1
-    fi
-}
-
 # Prompt for R1 and R2 links and file names
 read -p "Enter the URL for R1: " R1_URL
-validate_url "$R1_URL"
 read -p "Enter the file name for R1 (e.g., R1.fastq.gz): " R1_NAME
-validate_filename "$R1_NAME"
 
 read -p "Enter the URL for R2: " R2_URL
-validate_url "$R2_URL"
 read -p "Enter the file name for R2 (e.g., R2.fastq.gz): " R2_NAME
-validate_filename "$R2_NAME"
 
 mkdir data
 cd data
