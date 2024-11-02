@@ -129,8 +129,14 @@ echo "Total number of SNPs identified:"
 grep -vc "^#" "$SAMPLE.vcf"  # Count the number of non-header lines in the VCF file
 
 # Create a simple spreadsheet from the VCF file
+echo
 echo "Creating a simple spreadsheet from the VCF file..."
 grep -v "^##" "$SAMPLE.vcf" | cut -f1,2,4,5 | sed 's/\t/,/g' > snps.csv  # Extract relevant columns and save as CSV
+echo "Done!"
+
+# Create a spreadsheet with genotype information
+echo "Creating a spreadsheet with genotype information..."
+grep -v "^##" "$SAMPLE.vcf" | awk -F'\t' 'BEGIN {OFS=","} !/^#/ {split($10, genotype, ":"); print $1, $2, $4, $5, genotype[1]}' > snps_with_genotype.csv
 echo "Done!"
 
 # Report SNP locations
